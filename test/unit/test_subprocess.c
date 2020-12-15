@@ -130,7 +130,6 @@ bool test_specialchar_args(void) {
 }
 
 bool all_tests () {
-	// TODO: use rz_subprocess in cmd_system (!)
 	mu_run_test (test_noargs_noinput_outerr);
 	mu_run_test (test_args);
 	mu_run_test (test_env);
