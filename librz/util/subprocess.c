@@ -34,6 +34,8 @@ static bool create_pipe_overlap(HANDLE *pipe_read, HANDLE *pipe_write, LPSECURIT
 
 RZ_API bool rz_subprocess_init(void) { return true; }
 RZ_API void rz_subprocess_fini(void) {}
+RZ_API void rz_subprocess_lock(void) {}
+RZ_API void rz_subprocess_unlock(void) {}
 
 // Create an env block that inherits the current vars but overrides the given ones
 static LPWCH override_env(const char *envvars[], const char *envvals[], size_t env_size) {
@@ -400,14 +402,6 @@ static RzThreadLock *subprocs_mutex;
 static int sigchld_pipe[2];
 static RzThread *sigchld_thread;
 
-static void subprocess_lock(void) {
-	rz_th_lock_enter (subprocs_mutex);
-}
-
-static void subprocess_unlock(void) {
-	rz_th_lock_leave (subprocs_mutex);
-}
-
 static void handle_sigchld(int sig) {
 	ut8 b = 1;
 	write (sigchld_pipe[1], &b, 1);
@@ -435,7 +429,7 @@ static RzThreadFunctionRet sigchld_th(RzThread *th) {
 			if (pid <= 0)
 				break;
 
-			subprocess_lock ();
+			rz_subprocess_lock ();
 			void **it;
 			RzSubprocess *proc = NULL;
 			rz_pvector_foreach (&subprocs, it) {
@@ -446,7 +440,7 @@ static RzThreadFunctionRet sigchld_th(RzThread *th) {
 				}
 			}
 			if (!proc) {
-				subprocess_unlock ();
+				rz_subprocess_unlock ();
 				continue;
 			}
 
@@ -457,7 +451,7 @@ static RzThreadFunctionRet sigchld_th(RzThread *th) {
 			}
 			ut8 r = 0;
 			write (proc->killpipe[1], &r, 1);
-			subprocess_unlock ();
+			rz_subprocess_unlock ();
 		}
 	}
 	return RZ_TH_STOP;
@@ -502,6 +496,14 @@ RZ_API void rz_subprocess_fini(void) {
 	rz_th_lock_free (subprocs_mutex);
 }
 
+RZ_API void rz_subprocess_lock(void) {
+	rz_th_lock_enter (subprocs_mutex);
+}
+
+RZ_API void rz_subprocess_unlock(void) {
+	rz_th_lock_leave (subprocs_mutex);
+}
+
 RZ_API RzSubprocess *rz_subprocess_start(
 		const char *file, const char *args[], size_t args_size,
 		const char *envvars[], const char *envvals[], size_t env_size) {
@@ -514,7 +516,7 @@ RZ_API RzSubprocess *rz_subprocess_start(
 		memcpy (argv + 1, args, sizeof (char *) * args_size);
 	}
 	// done by calloc: argv[args_size + 1] = NULL;
-	subprocess_lock ();
+	rz_subprocess_lock ();
 	RzSubprocess *proc = RZ_NEW0 (RzSubprocess);
 	if (!proc) {
 		goto error;
@@ -599,7 +601,7 @@ RZ_API RzSubprocess *rz_subprocess_start(
 
 	rz_pvector_push (&subprocs, proc);
 
-	subprocess_unlock ();
+	rz_subprocess_unlock ();
 
 	return proc;
 error:
@@ -629,7 +631,7 @@ error:
 	if (stdin_pipe[1] == -1) {
 		close (stdin_pipe[1]);
 	}
-	subprocess_unlock ();
+	rz_subprocess_unlock ();
 	return NULL;
 }
 
@@ -724,8 +726,8 @@ RZ_API bool rz_subprocess_wait(RzSubprocess *proc, ut64 timeout_ms) {
 	if (r < 0) {
 		perror ("select");
 	}
-	subprocess_lock ();
-	subprocess_unlock ();
+	rz_subprocess_lock ();
+	rz_subprocess_unlock ();
 	return child_dead;
 }
 
@@ -740,7 +742,7 @@ RZ_API void rz_subprocess_stdin_write(RzSubprocess *proc, const ut8 *buf, size_t
 }
 
 RZ_API RzSubprocessOutput *rz_subprocess_drain(RzSubprocess *proc) {
-	subprocess_lock ();
+	rz_subprocess_lock ();
 	RzSubprocessOutput *out = RZ_NEW (RzSubprocessOutput);
 	if (out) {
 		out->out = rz_strbuf_drain_nofree (&proc->out);
@@ -748,7 +750,7 @@ RZ_API RzSubprocessOutput *rz_subprocess_drain(RzSubprocess *proc) {
 		out->ret = proc->ret;
 		out->timeout = false;
 	}
-	subprocess_unlock ();
+	rz_subprocess_unlock ();
 	return out;
 }
 
@@ -756,9 +758,9 @@ RZ_API void rz_subprocess_free(RzSubprocess *proc) {
 	if (!proc) {
 		return;
 	}
-	subprocess_lock ();
+	rz_subprocess_lock ();
 	rz_pvector_remove_data (&subprocs, proc);
-	subprocess_unlock ();
+	rz_subprocess_unlock ();
 	rz_strbuf_fini (&proc->out);
 	rz_strbuf_fini (&proc->err);
 	close (proc->killpipe[0]);
